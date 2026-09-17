@@ -1,6 +1,6 @@
 import { env } from "cloudflare:test";
 import { describe, it, expect, beforeEach } from "vitest";
-import { applyEvents, classify } from "../src/aggregate";
+import { applyEvents, buildStatements, classify } from "../src/aggregate";
 import { closePeriod, getInvoice } from "../src/invoice";
 import { ACCOUNT, HOUR, bucketsOf, makeEvent, pending, seedPriceBook } from "./helpers";
 
@@ -89,5 +89,42 @@ describe("events arriving after a period is closed", () => {
     await applyEvents(env, [late], WINDOW, Date.now());
 
     expect(await adjustments()).toHaveLength(1);
+  });
+});
+
+describe("redelivery across a close", () => {
+  it("does not turn an already-bucketed event into a second, billable copy", async () => {
+    // Queues are at-least-once, so this sequence is not hypothetical: the event is bucketed, the
+    // period closes, and then the same message is redelivered.
+    const event = pending(makeEvent("evt_redeliver", "gb_egress", 100, T0));
+    await applyEvents(env, [event], WINDOW, Date.now());
+    const { invoice } = await closePeriod(env, ACCOUNT, "2026-09", "tester", Date.now());
+    expect(invoice.subtotal_cents).toBe(810);
+
+    await applyEvents(env, [event], WINDOW, Date.now() + 60_000);
+    await applyEvents(env, [event], WINDOW, Date.now() + 120_000);
+
+    expect(await adjustments()).toHaveLength(0);          // not re-dispositioned
+    const buckets = await bucketsOf();
+    expect(buckets[0].quantity).toBe(100);                 // not re-counted
+    const after = await getInvoice(env, ACCOUNT, "2026-09");
+    expect(after.subtotal_cents).toBe(810);
+    expect(after.adjustments.carry_forward_cents).toBe(0); // and not billed a second time
+  });
+
+  it("re-decides inside the transaction when a close lands between the read and the write", async () => {
+    // Force the stale verdict the racing consumer would hold: classified as 'bucket' against a
+    // period status read a moment before the close committed.
+    await applyEvents(env, [pending(makeEvent("evt_seed", "gb_egress", 10, T0))], WINDOW, Date.now());
+    await closePeriod(env, ACCOUNT, "2026-09", "tester", Date.now());
+
+    const raced = pending(makeEvent("evt_raced", "gb_egress", 25, T0));
+    await env.DB.batch(buildStatements(env, [{ ...raced, disposition: { kind: "bucket" } }], Date.now()));
+
+    const inEvents = await env.DB.prepare(`SELECT COUNT(*) AS n FROM events WHERE event_id = 'evt_raced'`).first<{ n: number }>();
+    expect(inEvents!.n).toBe(0);                          // the stale verdict did not win
+    const rows = await adjustments();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ event_id: "evt_raced", reason: "period_closed" });
   });
 });

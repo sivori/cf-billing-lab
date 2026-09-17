@@ -87,3 +87,20 @@ started; the workspace layout leaves room for them.
 - *Hostname?* → **`meter.sivori.xyz`**, a custom domain on the existing zone, so PROJECT 3's
   Cloudflare Access policy is possible later without re-plumbing URLs (workers.dev subdomains
   cannot sit behind an Access app).
+
+**4.**
+
+```
+btw, explain what we are building
+```
+
+Claude answered inline (the four-stage table, plus the three load-bearing ideas: derived buckets,
+queue-timestamp arrival, and event time vs arrival time) and carried on building.
+
+**5.**
+
+```
+walk me through the code when done
+```
+
+Queued for the end of the build — a file-by-file walkthrough after the deploy and smoke test.

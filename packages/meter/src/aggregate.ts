@@ -121,43 +121,87 @@ export async function applyEvents(
     ),
   );
 
+  await env.DB.batch(buildStatements(env, decided, now));
+
+  return {
+    bucketed: decided.filter((d) => d.disposition.kind === "bucket").length,
+    adjusted: decided.filter((d) => d.disposition.kind === "adjustment").length,
+    dispositions: decided.map((d) => ({ event_id: d.event.event_id, disposition: d.disposition })),
+  };
+}
+
+/**
+ * Turn decided events into one atomic set of statements.
+ *
+ * `classify` is advisory, not authoritative. It runs against a period status READ a moment
+ * earlier, and a close can land in the gap between that read and this write — so the statements
+ * below re-decide inside the transaction:
+ *
+ *   - the bucket insert applies only while the period is still open and the event is not already
+ *     an adjustment;
+ *   - the period-closed adjustment applies only if the bucket insert above did not fire and the
+ *     period really is closed.
+ *
+ * Statements in a D1 batch run in order inside one transaction, so exactly one of the pair can
+ * take effect. That guard is also what makes a redelivery ACROSS a close a no-op: an event already
+ * in `events` cannot become an adjustment later and be billed twice.
+ */
+export function buildStatements(
+  env: Env,
+  decided: Array<PendingEvent & { disposition: Disposition }>,
+  now: number,
+): D1PreparedStatement[] {
   const statements: D1PreparedStatement[] = [];
   const touchedBuckets = new Map<string, QueuedEvent>();
 
-  for (const { event, arrival_time, disposition } of decided) {
-    statements.push(
-      env.DB.prepare(
-        `INSERT OR IGNORE INTO periods (account_id, period, status) VALUES (?, ?, 'open')`,
-      ).bind(event.account_id, event.period),
+  const insertEventIfOpen = (event: QueuedEvent, arrival_time: number) =>
+    env.DB.prepare(
+      `INSERT INTO events (event_id, account_id, meter, quantity, event_time, hour_start, period, arrival_time, recorded_at)
+       SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?
+        WHERE NOT EXISTS (SELECT 1 FROM periods WHERE account_id = ? AND period = ? AND status = 'closed')
+          AND NOT EXISTS (SELECT 1 FROM adjustments WHERE event_id = ?)
+       ON CONFLICT (event_id) DO NOTHING`,
+    ).bind(
+      event.event_id, event.account_id, event.meter, event.quantity,
+      event.event_time, event.hour_start, event.period, arrival_time, now,
+      event.account_id, event.period, event.event_id,
     );
 
-    if (disposition.kind === "bucket") {
-      statements.push(
-        env.DB.prepare(
-          `INSERT INTO events (event_id, account_id, meter, quantity, event_time, hour_start, period, arrival_time, recorded_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-           ON CONFLICT (event_id) DO NOTHING`,
-        ).bind(
-          event.event_id, event.account_id, event.meter, event.quantity,
-          event.event_time, event.hour_start, event.period, arrival_time, now,
-        ),
-      );
-      touchedBuckets.set(`${event.account_id}|${event.meter}|${event.hour_start}`, event);
-    } else {
-      statements.push(
-        env.DB.prepare(
-          `INSERT INTO adjustments (event_id, account_id, meter, quantity, event_time, hour_start, period, arrival_time, reason, recorded_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-           ON CONFLICT (event_id) DO NOTHING`,
-        ).bind(
-          event.event_id, event.account_id, event.meter, event.quantity,
-          event.event_time, event.hour_start, event.period, arrival_time, disposition.reason, now,
-        ),
-      );
+  const insertAdjustment = (event: QueuedEvent, arrival_time: number, reason: string, onlyIfClosed: boolean) =>
+    env.DB.prepare(
+      `INSERT INTO adjustments (event_id, account_id, meter, quantity, event_time, hour_start, period, arrival_time, reason, recorded_at)
+       SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+        WHERE NOT EXISTS (SELECT 1 FROM events WHERE event_id = ?)
+        ${onlyIfClosed ? "AND EXISTS (SELECT 1 FROM periods WHERE account_id = ? AND period = ? AND status = 'closed')" : ""}
+       ON CONFLICT (event_id) DO NOTHING`,
+    ).bind(
+      event.event_id, event.account_id, event.meter, event.quantity,
+      event.event_time, event.hour_start, event.period, arrival_time, reason, now,
+      event.event_id,
+      ...(onlyIfClosed ? [event.account_id, event.period] : []),
+    );
+
+  for (const { event, arrival_time, disposition } of decided) {
+    statements.push(
+      env.DB.prepare(`INSERT OR IGNORE INTO periods (account_id, period, status) VALUES (?, ?, 'open')`)
+        .bind(event.account_id, event.period),
+    );
+
+    if (disposition.kind === "adjustment" && disposition.reason === "beyond_lateness_window") {
+      // Lateness is pure arithmetic on two fixed timestamps — no race, no re-decision needed.
+      statements.push(insertAdjustment(event, arrival_time, "beyond_lateness_window", false));
+      continue;
     }
+
+    // Either a bucket or a period_closed adjustment: let the transaction decide which.
+    statements.push(insertEventIfOpen(event, arrival_time));
+    statements.push(insertAdjustment(event, arrival_time, "period_closed", true));
+    touchedBuckets.set(`${event.account_id}|${event.meter}|${event.hour_start}`, event);
   }
 
   // Recompute each touched bucket from the deduplicated events. This is the idempotence.
+  // Running it when nothing was inserted is a no-op: the SUM is unchanged, and if no rows exist
+  // for the bucket at all the GROUP BY yields nothing to insert.
   for (const event of touchedBuckets.values()) {
     statements.push(
       env.DB.prepare(
@@ -174,11 +218,6 @@ export async function applyEvents(
     );
   }
 
-  await env.DB.batch(statements);
-
-  return {
-    bucketed: decided.filter((d) => d.disposition.kind === "bucket").length,
-    adjusted: decided.filter((d) => d.disposition.kind === "adjustment").length,
-    dispositions: decided.map((d) => ({ event_id: d.event.event_id, disposition: d.disposition })),
-  };
+  return statements;
 }
+
