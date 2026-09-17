@@ -1,0 +1,16 @@
+{
+  "name": "cf-billing-lab",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Three small, deployable Cloudflare projects around consumption billing: meter (usage pipeline), ratecard (semantic search over billing docs), gate (Zero Trust over the admin surface).",
+  "workspaces": ["packages/*"],
+  "scripts": {
+    "test": "npm run test --workspaces --if-present",
+    "typecheck": "npm run typecheck --workspaces --if-present"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.2",
+    "wrangler": "^4.134.0"
+  }
+}
