@@ -1,0 +1,23 @@
+{
+  "name": "meter",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Usage metering and rating pipeline on Cloudflare: collection -> aggregation -> rating -> invoicing, with a reconciliation loop against the raw archive.",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "migrate:local": "wrangler d1 migrations apply meter --local",
+    "migrate:remote": "wrangler d1 migrations apply meter --remote",
+    "seed": "./scripts/seed.sh",
+    "cf-typegen": "wrangler types"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-pool-workers": "^0.9.0",
+    "typescript": "^5.9.2",
+    "vitest": "~3.2.4",
+    "wrangler": "^4.134.0"
+  }
+}

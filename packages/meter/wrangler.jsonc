@@ -1,0 +1,60 @@
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "meter",
+  "main": "src/index.ts",
+  "compatibility_date": "2025-09-01",
+  "observability": { "enabled": true },
+
+  // meter.sivori.xyz, not workers.dev: PROJECT 3 puts Cloudflare Access in front of
+  // /admin/*, and an Access application can only be attached to a zone-backed hostname.
+  "routes": [{ "pattern": "meter.sivori.xyz", "custom_domain": true }],
+
+  // Deliberately NO "triggers.crons". Reconciliation is an explicit POST /admin/reconcile.
+  // Reasons, in order: (1) reconciliation is an operator decision with an audit trail, not a
+  // background surprise; (2) this account is at Cloudflare's 5-cron-per-account cap, and the
+  // failure mode is a partial deploy that reports success while the schedule silently stays stale.
+
+  "vars": {
+    // How late an event may arrive and still be folded into its event-time bucket.
+    "LATENESS_WINDOW_HOURS": "72",
+    // How far into the future an event_time may be before ingest rejects it (clock skew).
+    "CLOCK_SKEW_TOLERANCE_MINUTES": "60",
+    // Max events accepted in one POST /v1/events call.
+    "MAX_BATCH_EVENTS": "100",
+    // Enables POST /admin/demo/* — the drift injector that makes reconciliation demonstrable.
+    "DEMO_MODE": "true"
+  },
+
+  "assets": { "directory": "./public", "binding": "ASSETS" },
+
+  // System of record: raw events, derived buckets, periods, rated lines, adjustments,
+  // exceptions, reconciliation runs, audit log.
+  "d1_databases": [
+    { "binding": "DB", "database_name": "meter", "database_id": "aaae9757-8253-4b48-935e-40f6db152ca2" }
+  ],
+
+  // Append-only raw archive, partitioned by EVENT date: raw/dt=<date>/<account>/<event_id>.json
+  "r2_buckets": [
+    { "binding": "ARCHIVE", "bucket_name": "meter-archive" }
+  ],
+
+  // Versioned price book. pricebook:v<N> is immutable once written; pricebook:current points at one.
+  "kv_namespaces": [
+    { "binding": "PRICEBOOK", "id": "625255a9aa384d8a87179985dc874bdd" }
+  ],
+
+  // Collection is a queue so ingest stays a cheap, always-available write path:
+  // a D1 outage degrades aggregation, not the customer's ability to report usage.
+  "queues": {
+    "producers": [{ "binding": "EVENTS_Q", "queue": "meter-events" }],
+    "consumers": [
+      {
+        "queue": "meter-events",
+        "max_batch_size": 25,
+        "max_batch_timeout": 5,
+        "max_retries": 3,
+        "dead_letter_queue": "meter-events-dlq"
+      }
+    ]
+  }
+}
