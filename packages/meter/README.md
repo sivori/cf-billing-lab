@@ -2,7 +2,7 @@
 
 **A usage-billing pipeline that can prove its own invoice — by recomputing it from an independent archive and refusing to close over a discrepancy it cannot explain.**
 
-Live: **[meter.sivori.xyz](https://meter.sivori.xyz)** · 47 tests in `workerd` against real D1, R2 and KV.
+Live: **[meter.sivori.xyz](https://meter.sivori.xyz)** · 49 tests in `workerd` against real D1, R2 and KV.
 
 ## Why it is shaped this way
 
@@ -63,8 +63,12 @@ resolve a discrepancy on its own.
 
 ## The five-minute tour
 
-1. Open [meter.sivori.xyz](https://meter.sivori.xyz). Click **Burst: 24 events across 24h** and watch
-   the buckets fill — one per event hour, a second or two behind, because the queue is real.
+0. Open [meter.sivori.xyz](https://meter.sivori.xyz). The page gives you your own `account_id`,
+   because closing a period is a one-way door and a shared account would let the first visitor end
+   the demo for everyone else. **Worked example** loads `acct_demo`: a period already closed, with
+   a resolved exception on it.
+1. Click **Burst: 24 events across 24h** and watch the buckets fill — one per event hour, a second
+   or two behind, because the queue is real.
 2. Click **Emit one 100h late**. It lands in *adjustments*, not a bucket: it arrived outside the
    72-hour lateness window.
 3. Click **Inject drift**, then **Run reconciliation**. The archive and the ledger disagree, and
@@ -118,12 +122,16 @@ recomputes **quantities**. It takes **disposition** (bucketed vs adjusted) from 
 disposition depends on the ordering of close against arrival, which the archive alone cannot
 replay. An archived event D1 knows nothing about is itself a finding.
 
-**Reconciliation never resolves, and never re-opens.** Re-running refreshes `expected`, `actual`
-and `last_seen_at` on a deterministically-keyed row; it cannot set `status`. A discrepancy that
-disappears on its own leaves the exception open, because "it went away" is a finding, not a fix.
-Resolving is a human action, requires a note, and writes an audit row. *Cost:* exceptions
-accumulate and need triage. That is the point. Note also that **resolving does not correct data** —
-it records a judgment. The live demo shows this honestly: a resolved drift is still in the bucket.
+**Reconciliation never resolves — and re-opens only when the numbers change.** Re-running
+refreshes `expected`, `actual` and `last_seen_at` on a deterministically-keyed row. There is no
+path in that statement to `'resolved'`: only a human, with a note, in an audited request. A
+discrepancy that disappears on its own leaves the exception open, because "it went away" is a
+finding, not a fix. But a *different* discrepancy on the same bucket flips it back to open, because
+a different number is a different finding and the note written about the old one does not explain
+it — otherwise one resolution would turn that bucket into a permanent blind spot. *Cost:*
+exceptions accumulate and need triage. That is the point. Note also that **resolving does not
+correct data** — it records a judgment. The live `acct_demo` invoice shows this honestly: it closed
+with the injected drift still in the bucket, because someone said they understood it.
 
 **Money is integer cents, computed in `BigInt`.** `amount = round_half_up(billable × price_cents /
 per_units)`. At 10¹² units the intermediate product exceeds the exact integer range of a double, and
@@ -177,7 +185,7 @@ that needs a regex to protect is one that eventually gets protected wrong.
 
 ```bash
 npm install
-npm run migrate:local && npm test          # 47 tests in workerd, real D1/R2/KV
+npm run migrate:local && npm test          # 49 tests in workerd, real D1/R2/KV
 npm run dev                                 # http://localhost:8787
 
 npm run migrate:remote && npm run deploy    # then POST /admin/pricebook/seed

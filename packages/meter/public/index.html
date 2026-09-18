@@ -56,9 +56,10 @@
   <h1>meter<span>.</span></h1>
   <div class="tagline">collection → aggregation → rating → invoicing, with a reconciliation loop against the raw archive</div>
   <div class="ctx">
-    <div><label for="account">account_id</label><input id="account" value="acct_demo"></div>
+    <div><label for="account">account_id</label><input id="account"></div>
     <div><label for="period">period</label><input id="period" placeholder="YYYY-MM"></div>
     <div><label>&nbsp;</label><button id="refresh">Refresh</button></div>
+    <div><label>&nbsp;</label><button id="worked" title="acct_demo: a period already closed, with a resolved exception">Worked example</button></div>
   </div>
 </header>
 
@@ -336,6 +337,12 @@ $("refresh").onclick = refresh;
 $("account").onchange = refresh;
 $("period").onchange = refresh;
 $("period").value = nowPeriod();
+
+// Each visitor gets their own account, because closing a period is a one-way door: a shared
+// account would mean the first person to click "Close period" ends the demo for everyone after
+// them. `acct_demo` is kept as the worked example of an already-closed period.
+$("account").value = "acct_" + Math.random().toString(36).slice(2, 8);
+$("worked").onclick = () => { $("account").value = "acct_demo"; refresh(); };
 
 loadPriceBook().then(refresh);
 setInterval(refresh, 2000);

@@ -185,3 +185,37 @@ describe("resolving an exception", () => {
     expect(invoice.status).toBe("closed");
   });
 });
+
+describe("a resolved exception does not become a blind spot", () => {
+  it("re-opens when the discrepancy changes, because a different number is a different finding", async () => {
+    await seedUsage();
+    await env.DB.prepare(`UPDATE buckets SET quantity = quantity + 500 WHERE account_id = ? AND meter = 'requests' AND hour_start = ?`)
+      .bind(ACCOUNT, T0).run();
+    const first = await reconcile(env, ACCOUNT, PERIOD, "ops", Date.now(), "run_1");
+    const id = first.findings[0].exception_id;
+    await resolveException(env, id, "ops@example.com", "explained: a replayed backfill", Date.now());
+
+    // A second, unrelated drift lands on the same bucket. The old note does not explain it.
+    await env.DB.prepare(`UPDATE buckets SET quantity = quantity + 900 WHERE account_id = ? AND meter = 'requests' AND hour_start = ?`)
+      .bind(ACCOUNT, T0).run();
+    await reconcile(env, ACCOUNT, PERIOD, "ops", Date.now() + 60_000, "run_2");
+
+    const row = await env.DB.prepare(`SELECT status, actual_quantity FROM exceptions WHERE exception_id = ?`)
+      .bind(id).first<{ status: string; actual_quantity: number }>();
+    expect(row).toMatchObject({ status: "open", actual_quantity: 2400 });
+    await expect(closePeriod(env, ACCOUNT, PERIOD, "ops", Date.now())).rejects.toMatchObject({ code: "unresolved_exceptions" });
+  });
+
+  it("leaves an unchanged discrepancy resolved, so an explained finding stays explained", async () => {
+    await seedUsage();
+    await env.DB.prepare(`UPDATE buckets SET quantity = quantity + 500 WHERE account_id = ? AND hour_start = ?`)
+      .bind(ACCOUNT, T0).run();
+    const first = await reconcile(env, ACCOUNT, PERIOD, "ops", Date.now(), "run_1");
+    const id = first.findings[0].exception_id;
+    await resolveException(env, id, "ops@example.com", "known, accepted", Date.now());
+
+    await reconcile(env, ACCOUNT, PERIOD, "ops", Date.now() + 60_000, "run_2");
+    const row = await env.DB.prepare(`SELECT status FROM exceptions WHERE exception_id = ?`).bind(id).first<{ status: string }>();
+    expect(row!.status).toBe("resolved");
+  });
+});

@@ -12,7 +12,8 @@
     "migrate:local": "wrangler d1 migrations apply meter --local",
     "migrate:remote": "wrangler d1 migrations apply meter --remote",
     "seed": "./scripts/seed.sh",
-    "cf-typegen": "wrangler types"
+    "cf-typegen": "wrangler types",
+    "pretypecheck": "wrangler types"
   },
   "devDependencies": {
     "@cloudflare/vitest-pool-workers": "^0.9.0",

@@ -202,9 +202,16 @@ export async function reconcile(
          expected_quantity = excluded.expected_quantity,
          actual_quantity   = excluded.actual_quantity,
          detail            = excluded.detail,
-         last_seen_at      = excluded.last_seen_at`,
-      // Note what this UPDATE does not touch: `status`. Re-running reconciliation refreshes the
-      // numbers on a finding, and can never flip a resolved exception back open or an open one shut.
+         last_seen_at      = excluded.last_seen_at,
+         status = CASE
+           WHEN exceptions.status = 'resolved'
+            AND (exceptions.actual_quantity   IS NOT excluded.actual_quantity
+              OR exceptions.expected_quantity IS NOT excluded.expected_quantity)
+           THEN 'open' ELSE exceptions.status END`,
+      // This UPDATE can never close a finding — there is no path here to 'resolved'. It can only
+      // re-open one, and only when the numbers CHANGED: a different discrepancy on the same bucket
+      // is a different finding, and a resolution note written about the old one does not explain it.
+      // An unchanged discrepancy that someone has already explained stays explained.
     )
       .bind(
         f.exception_id, account, period, f.meter, f.hour_start, f.kind,
