@@ -1,0 +1,344 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>meter — usage metering and rating pipeline</title>
+<style>
+  :root {
+    --bg: #0e1116; --panel: #161b22; --panel-2: #1c232c; --line: #2a323d;
+    --ink: #e6edf3; --muted: #8b97a6; --accent: #f6a935; --ok: #3fb950; --warn: #d29922; --bad: #f85149;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+  header { padding: 22px 24px 14px; border-bottom: 1px solid var(--line); display: flex; flex-wrap: wrap; gap: 16px; align-items: baseline; }
+  h1 { margin: 0; font-size: 18px; letter-spacing: .02em; }
+  h1 span { color: var(--accent); }
+  .tagline { color: var(--muted); font-size: 13px; }
+  .ctx { margin-left: auto; display: flex; gap: 8px; align-items: center; }
+  main { padding: 20px 24px 60px; display: grid; gap: 16px; grid-template-columns: repeat(auto-fit, minmax(420px, 1fr)); max-width: 1500px; }
+  section { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 16px; }
+  section h2 { margin: 0 0 4px; font-size: 13px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); }
+  section h2 b { color: var(--accent); font-weight: 600; }
+  .hint { color: var(--muted); font-size: 12px; margin: 0 0 12px; }
+  label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 3px; }
+  input, select, textarea, button { font: inherit; color: var(--ink); background: var(--panel-2); border: 1px solid var(--line); border-radius: 6px; padding: 6px 9px; }
+  input, select, textarea { width: 100%; }
+  button { cursor: pointer; background: var(--panel-2); transition: border-color .15s, background .15s; }
+  button:hover { border-color: var(--accent); }
+  button.primary { background: var(--accent); color: #1a1205; border-color: var(--accent); font-weight: 600; }
+  button.primary:hover { filter: brightness(1.08); }
+  button:disabled { opacity: .5; cursor: not-allowed; }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: end; margin-bottom: 10px; }
+  .row > div { flex: 1 1 110px; }
+  table { width: 100%; border-collapse: collapse; font-family: var(--mono); font-size: 12px; }
+  th { text-align: left; color: var(--muted); font-weight: 500; border-bottom: 1px solid var(--line); padding: 5px 6px; }
+  td { padding: 5px 6px; border-bottom: 1px solid #1f262f; }
+  td.num, th.num { text-align: right; }
+  .empty { color: var(--muted); font-size: 12px; font-style: italic; padding: 8px 2px; }
+  .pill { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 11px; font-family: var(--mono); border: 1px solid var(--line); }
+  .pill.open { color: var(--ok); border-color: #1f4d2b; } .pill.closed { color: var(--accent); border-color: #5a4218; }
+  .pill.resolved { color: var(--muted); } .pill.bad { color: var(--bad); border-color: #5c2320; }
+  .total { display: flex; justify-content: space-between; align-items: baseline; margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--line); font-family: var(--mono); }
+  .total .amount { font-size: 22px; color: var(--accent); }
+  .log { font-family: var(--mono); font-size: 11.5px; background: #0b0e13; border: 1px solid var(--line); border-radius: 6px; padding: 9px; height: 132px; overflow-y: auto; white-space: pre-wrap; }
+  .log .err { color: var(--bad); } .log .ok { color: var(--ok); } .log .dim { color: var(--muted); }
+  .wide { grid-column: 1 / -1; }
+  .flex { display: flex; gap: 8px; flex-wrap: wrap; }
+  .kv { font-family: var(--mono); font-size: 12px; color: var(--muted); }
+  .kv b { color: var(--ink); font-weight: 500; }
+  a { color: var(--accent); }
+</style>
+</head>
+<body>
+<header>
+  <h1>meter<span>.</span></h1>
+  <div class="tagline">collection → aggregation → rating → invoicing, with a reconciliation loop against the raw archive</div>
+  <div class="ctx">
+    <div><label for="account">account_id</label><input id="account" value="acct_demo"></div>
+    <div><label for="period">period</label><input id="period" placeholder="YYYY-MM"></div>
+    <div><label>&nbsp;</label><button id="refresh">Refresh</button></div>
+  </div>
+</header>
+
+<main>
+  <section>
+    <h2><b>1</b> · Collection — emit billable events</h2>
+    <p class="hint">Events are validated, queued, archived to R2 and folded into their <em>event-time</em> bucket. Backdate one past the 72h lateness window, or emit into a closed period, to watch it route to adjustments instead.</p>
+    <div class="row">
+      <div><label for="meter">meter</label><select id="meter"></select></div>
+      <div><label for="qty">quantity</label><input id="qty" type="number" value="250000"></div>
+      <div><label for="back">backdate (hours)</label><input id="back" type="number" value="0"></div>
+      <div><label for="count">events</label><input id="count" type="number" value="1" min="1" max="100"></div>
+    </div>
+    <div class="flex">
+      <button class="primary" id="emit">Emit</button>
+      <button id="burst">Burst: 24 events across 24h</button>
+      <button id="lateOne">Emit one 100h late</button>
+    </div>
+    <div class="log" id="log" style="margin-top:12px"></div>
+  </section>
+
+  <section>
+    <h2><b>2</b> · Aggregation — buckets by event hour</h2>
+    <p class="hint">Derived, never incremented: each write recomputes <span class="kv">SUM(quantity)</span> over deduplicated events, so replay and reordering are no-ops. Polls every 2s.</p>
+    <div style="max-height:300px; overflow-y:auto">
+      <table><thead><tr><th>meter</th><th>event hour (UTC)</th><th class="num">quantity</th><th class="num">events</th></tr></thead>
+      <tbody id="buckets"><tr><td colspan="4" class="empty">no buckets yet</td></tr></tbody></table>
+    </div>
+  </section>
+
+  <section>
+    <h2><b>3 · 4</b> · Rating and invoicing</h2>
+    <p class="hint">Rated against the price book in KV, in integer cents, with the version stamped on every line. Closing is keyed on (account, period) and one-way.</p>
+    <div class="kv" id="invoiceMeta" style="margin-bottom:8px"></div>
+    <table><thead><tr><th>meter</th><th class="num">quantity</th><th class="num">free</th><th class="num">billable</th><th class="num">rate</th><th class="num">amount</th></tr></thead>
+    <tbody id="lines"><tr><td colspan="6" class="empty">no usage in this period</td></tr></tbody></table>
+    <div class="total"><span id="totalLabel">Invoice preview</span><span class="amount" id="total">$0.00</span></div>
+    <div class="flex" style="margin-top:12px">
+      <button class="primary" id="close">Close period</button>
+      <button id="seed">Seed price book</button>
+    </div>
+  </section>
+
+  <section>
+    <h2>Adjustments — usage that could not move the number</h2>
+    <p class="hint">Events that arrived after the period closed, or beyond the lateness window. Recorded and priced at the marginal rate, never folded into an issued invoice.</p>
+    <div class="kv" id="carry" style="margin-bottom:8px"></div>
+    <div style="max-height:220px; overflow-y:auto">
+      <table><thead><tr><th>event_id</th><th>meter</th><th class="num">qty</th><th>event time</th><th>reason</th></tr></thead>
+      <tbody id="adjustments"><tr><td colspan="5" class="empty">none</td></tr></tbody></table>
+    </div>
+  </section>
+
+  <section class="wide">
+    <h2>Reconciliation — recompute from the R2 archive, diff against D1</h2>
+    <p class="hint">Aggregates the raw archive independently and compares it to the ledger. Findings are keyed, so re-running updates them rather than duplicating them — and nothing here ever resolves itself. A period cannot close while an exception is open.</p>
+    <div class="flex" style="margin-bottom:12px">
+      <button class="primary" id="reconcile">Run reconciliation</button>
+      <button id="drift">Inject drift (demo)</button>
+      <span class="kv" id="runMeta" style="align-self:center"></span>
+    </div>
+    <table><thead><tr><th>kind</th><th>meter</th><th>event hour</th><th class="num">archive</th><th class="num">D1</th><th>detail</th><th>status</th><th></th></tr></thead>
+    <tbody id="exceptions"><tr><td colspan="8" class="empty">no exceptions — the ledger matches the archive</td></tr></tbody></table>
+  </section>
+
+  <section class="wide">
+    <h2>Audit trail — append-only</h2>
+    <p class="hint">Who closed a period, who resolved an exception. The actor is <span class="kv">public-demo</span> until PROJECT 3 puts Cloudflare Access in front of <span class="kv">/admin/*</span> and validates the JWT in the Worker.</p>
+    <table><thead><tr><th>#</th><th>when</th><th>actor</th><th>action</th><th>target</th><th>detail</th></tr></thead>
+    <tbody id="audit"><tr><td colspan="6" class="empty">nothing yet</td></tr></tbody></table>
+  </section>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const nowPeriod = () => new Date().toISOString().slice(0, 7);
+const account = () => $("account").value.trim();
+const period = () => $("period").value.trim() || nowPeriod();
+const cents = (c) => `$${(c / 100).toFixed(2)}`;
+const stamp = (ms) => new Date(ms).toISOString().replace("T", " ").slice(0, 16) + "Z";
+let priceBook = null;
+
+function log(message, cls = "") {
+  const el = $("log");
+  const line = document.createElement("div");
+  if (cls) line.className = cls;
+  line.textContent = `${new Date().toISOString().slice(11, 19)}  ${message}`;
+  el.prepend(line);
+}
+
+async function api(path, options) {
+  const res = await fetch(path, options);
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    const err = body.error || {};
+    throw new Error(`${res.status} ${err.code || "error"}: ${err.message || "request failed"}`);
+  }
+  return body;
+}
+
+const post = (path, body) =>
+  api(path, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body ?? {}) });
+
+function rowsInto(tbody, rows, render, emptyText) {
+  const el = $(tbody);
+  el.innerHTML = "";
+  if (!rows.length) {
+    el.innerHTML = `<tr><td colspan="9" class="empty">${emptyText}</td></tr>`;
+    return;
+  }
+  for (const row of rows) el.insertAdjacentHTML("beforeend", render(row));
+}
+
+const escape = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+
+// ---- emit ------------------------------------------------------------------------------------
+async function emit(events) {
+  const result = await post("/v1/events", { events });
+  if (result.accepted.length) log(`accepted ${result.accepted.length} event(s) — queued`, "ok");
+  for (const r of result.rejected) log(`rejected ${r.event_id}: ${r.code} — ${r.message}`, "err");
+  // The queue is asynchronous: the buckets fill a moment later, which is the honest behaviour to show.
+  setTimeout(refresh, 900);
+  setTimeout(refresh, 2500);
+}
+
+function buildEvents(count, meter, quantity, backHours) {
+  const base = Date.now() - backHours * 3600_000;
+  return Array.from({ length: count }, (_, i) => ({
+    event_id: `evt_${crypto.randomUUID()}`,
+    account_id: account(),
+    meter,
+    quantity,
+    event_time: new Date(base - i * 60_000).toISOString(),
+  }));
+}
+
+$("emit").onclick = () =>
+  emit(buildEvents(+$("count").value, $("meter").value, +$("qty").value, +$("back").value)).catch((e) => log(e.message, "err"));
+
+$("burst").onclick = () => {
+  const meter = $("meter").value;
+  const quantity = +$("qty").value;
+  const events = Array.from({ length: 24 }, (_, h) => ({
+    event_id: `evt_${crypto.randomUUID()}`,
+    account_id: account(),
+    meter,
+    quantity: Math.max(1, Math.round(quantity * (0.5 + Math.random()))),
+    event_time: new Date(Date.now() - h * 3600_000).toISOString(),
+  }));
+  emit(events).catch((e) => log(e.message, "err"));
+};
+
+$("lateOne").onclick = () =>
+  emit(buildEvents(1, $("meter").value, +$("qty").value, 100)).catch((e) => log(e.message, "err"));
+
+// ---- admin actions ---------------------------------------------------------------------------
+$("close").onclick = async () => {
+  try {
+    const result = await post(`/admin/periods/${encodeURIComponent(account())}/${period()}/close`);
+    log(result.already_closed
+      ? `period ${period()} was already closed — returned the same invoice, no second set of lines`
+      : `closed ${period()} at ${cents(result.invoice.subtotal_cents)}, price book ${result.invoice.price_book_version}`, "ok");
+  } catch (e) {
+    log(e.message, "err");
+  }
+  refresh();
+};
+
+$("seed").onclick = async () => {
+  try {
+    const r = await post("/admin/pricebook/seed");
+    log(r.seeded ? `seeded price book ${r.version}` : `price book ${r.version} already current`, "ok");
+  } catch (e) { log(e.message, "err"); }
+  refresh();
+};
+
+$("reconcile").onclick = async () => {
+  try {
+    const r = await post("/admin/reconcile", { account_id: account(), period: period() });
+    log(`reconciled ${r.objects_scanned} archived event(s) across ${r.buckets_compared} bucket(s): ` +
+        `${r.exceptions_seen} finding(s), ${r.exceptions_opened} new`, r.exceptions_seen ? "err" : "ok");
+  } catch (e) { log(e.message, "err"); }
+  refresh();
+};
+
+$("drift").onclick = async () => {
+  try {
+    const r = await post("/admin/demo/drift", { account_id: account(), period: period() });
+    log(`drift injected: ${r.drifted.meter} bucket moved by ${r.drifted.delta} — now run reconciliation`, "dim");
+  } catch (e) { log(e.message, "err"); }
+  refresh();
+};
+
+window.resolveException = async (id) => {
+  const note = prompt("Resolution note — what did you find, and what did you do about it?");
+  if (!note || note.trim().length < 3) return;
+  try {
+    await post(`/admin/exceptions/${id}/resolve`, { note: note.trim() });
+    log(`exception ${id.slice(0, 12)}… resolved`, "ok");
+  } catch (e) { log(e.message, "err"); }
+  refresh();
+};
+
+// ---- render ----------------------------------------------------------------------------------
+async function loadPriceBook() {
+  try {
+    priceBook = await api("/v1/pricebook");
+    $("meter").innerHTML = Object.entries(priceBook.meters)
+      .map(([k, v]) => `<option value="${k}">${escape(v.display)}</option>`).join("");
+  } catch {
+    $("meter").innerHTML = `<option value="">no price book — click "Seed price book"</option>`;
+  }
+}
+
+async function refresh() {
+  const acct = encodeURIComponent(account());
+  const p = period();
+
+  const [buckets, invoice, exceptions, runs, audit] = await Promise.all([
+    api(`/v1/accounts/${acct}/buckets?period=${p}`).catch(() => ({ buckets: [] })),
+    api(`/v1/accounts/${acct}/invoice?period=${p}`).catch(() => null),
+    api(`/v1/accounts/${acct}/exceptions?period=${p}`).catch(() => ({ exceptions: [] })),
+    api(`/v1/accounts/${acct}/reconciliation-runs`).catch(() => ({ runs: [] })),
+    api(`/v1/audit`).catch(() => ({ audit: [] })),
+  ]);
+
+  rowsInto("buckets", buckets.buckets,
+    (b) => `<tr><td>${escape(b.meter)}</td><td>${stamp(b.hour_start)}</td><td class="num">${b.quantity.toLocaleString()}</td><td class="num">${b.event_count}</td></tr>`,
+    "no buckets yet — emit some events");
+
+  if (invoice) {
+    const status = `<span class="pill ${invoice.status}">${invoice.status}</span>`;
+    $("invoiceMeta").innerHTML =
+      `${status} &nbsp; price book <b>${escape(invoice.price_book_version)}</b> &nbsp; source <b>${invoice.source}</b>` +
+      (invoice.closed_at ? ` &nbsp; closed <b>${stamp(invoice.closed_at)}</b> by <b>${escape(invoice.closed_by || "")}</b>` : "") +
+      (invoice.unpriced_meters.length ? ` &nbsp; <span class="pill bad">unpriced: ${invoice.unpriced_meters.map(escape).join(", ")}</span>` : "");
+    rowsInto("lines", invoice.lines,
+      (l) => `<tr><td>${escape(l.meter)}</td><td class="num">${l.quantity.toLocaleString()}</td><td class="num">${l.free_units_applied.toLocaleString()}</td>` +
+             `<td class="num">${l.billable_units.toLocaleString()}</td><td class="num">${l.price_cents}c / ${l.per_units.toLocaleString()}</td>` +
+             `<td class="num">${cents(l.amount_cents)}</td></tr>`,
+      "no usage in this period");
+    $("total").textContent = cents(invoice.subtotal_cents);
+    $("totalLabel").textContent = invoice.status === "closed" ? `Invoice ${invoice.period} (issued)` : `Invoice preview ${invoice.period}`;
+    $("close").disabled = invoice.status === "closed";
+
+    const adj = invoice.adjustments;
+    $("carry").innerHTML = adj.events.length
+      ? `${adj.events.length} adjustment(s) · carry-forward <b>${cents(adj.carry_forward_cents)}</b> · not included in the invoice total above`
+      : "";
+    rowsInto("adjustments", adj.events,
+      (a) => `<tr><td>${escape(a.event_id).slice(0, 18)}…</td><td>${escape(a.meter)}</td><td class="num">${a.quantity.toLocaleString()}</td>` +
+             `<td>${stamp(a.event_time)}</td><td><span class="pill bad">${escape(a.reason)}</span></td></tr>`,
+      "none");
+  }
+
+  rowsInto("exceptions", exceptions.exceptions,
+    (e) => `<tr><td>${escape(e.kind)}</td><td>${escape(e.meter ?? "—")}</td><td>${e.hour_start ? stamp(e.hour_start) : "—"}</td>` +
+           `<td class="num">${e.expected_quantity ?? "—"}</td><td class="num">${e.actual_quantity ?? "—"}</td>` +
+           `<td>${escape(e.detail ?? "")}</td><td><span class="pill ${e.status}">${e.status}</span>${e.resolved_by ? `<br><span class="kv">${escape(e.resolved_by)}</span>` : ""}</td>` +
+           `<td>${e.status === "open" ? `<button onclick="resolveException('${e.exception_id}')">Resolve</button>` : escape(e.resolution_note ?? "")}</td></tr>`,
+    "no exceptions — the ledger matches the archive");
+
+  const last = runs.runs[0];
+  $("runMeta").innerHTML = last
+    ? `last run ${stamp(last.started_at)} · ${last.objects_scanned} object(s) scanned · ${last.exceptions_seen} finding(s)`
+    : "never run for this account";
+
+  rowsInto("audit", audit.audit,
+    (a) => `<tr><td>${a.seq}</td><td>${stamp(a.ts)}</td><td>${escape(a.actor)}</td><td>${escape(a.action)}</td>` +
+           `<td>${escape(a.target)}</td><td class="kv">${escape(a.detail ?? "")}</td></tr>`,
+    "nothing yet");
+}
+
+$("refresh").onclick = refresh;
+$("account").onchange = refresh;
+$("period").onchange = refresh;
+$("period").value = nowPeriod();
+
+loadPriceBook().then(refresh);
+setInterval(refresh, 2000);
+</script>
+</body>
+</html>
