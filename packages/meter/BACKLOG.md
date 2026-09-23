@@ -26,6 +26,7 @@
 - [ ] Commitment/minimum-spend handling at close @idea
 - [ ] Per-account lateness windows, rather than one account-wide env var @idea
 - [ ] Invoice PDF / stable invoice numbers @idea
+- [ ] Reconciliation is manual (`POST /admin/reconcile`), partly because of the old 5-cron account cap. The account went Workers Paid on 2026-09-22 (cap 1,000), so a scheduled reconcile is now possible — the audit-trail reason for keeping it manual still stands; decide deliberately @idea
 
 ## Done
 - [x] 2026-09-17 Four-stage pipeline: ingest → queue → R2 archive + D1 buckets → rating → close
