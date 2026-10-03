@@ -104,3 +104,17 @@ walk me through the code when done
 ```
 
 Queued for the end of the build — a file-by-file walkthrough after the deploy and smoke test.
+
+**6.**
+
+```
+can we do anything cool with the stuff cloudflare announced this week?
+```
+
+```
+do issues, then i want to set up a tunnel so i can access stacks from another machine or does that not make sense
+```
+
+Asked portfolio-wide, not about this repo. Birthday Week 2026 shipped Workers **Issues** (built-in
+error grouping, routed to a coding agent via Automations). Claude enabled it on meter with
+`observability.issues.enabled` (needs Wrangler ≥ 4.134, which meter already had).

@@ -3,7 +3,7 @@
   "name": "meter",
   "main": "src/index.ts",
   "compatibility_date": "2025-09-01",
-  "observability": { "enabled": true },
+  "observability": { "enabled": true, "issues": { "enabled": true } },
 
   // meter.sivori.xyz, not workers.dev: PROJECT 3 puts Cloudflare Access in front of
   // /admin/*, and an Access application can only be attached to a zone-backed hostname.
